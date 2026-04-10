@@ -20,6 +20,7 @@
  *    distribution.
  */
 
+using SAM.API;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -28,6 +29,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using static SAM.Game.InvariantShorthand;
 using APITypes = SAM.API.Types;
@@ -98,12 +100,36 @@ namespace SAM.Game
                 base.Text += " | " + this._GameId.ToString(CultureInfo.InvariantCulture);
             }
 
+            this._SteamClient.SteamUserStats.RequestGlobalAchievementPercentages();
+
             this._UserStatsReceivedCallback = client.CreateAndRegisterCallback<API.Callbacks.UserStatsReceived>();
             this._UserStatsReceivedCallback.OnRun += this.OnUserStatsReceived;
 
+            this.RefreshStats();
+
             //this.UserStatsStoredCallback = new API.Callback(1102, new API.Callback.CallbackFunction(this.OnUserStatsStored));
 
-            this.RefreshStats();
+        }
+
+        private async Task InitializeAsync()
+        {
+            await Task.Delay(2000);
+
+            var shouldUpdate = false;
+
+            foreach(ListViewItem item in this._AchievementListView.Items)
+            {
+                if ((item.Tag as Stats.AchievementInfo).Progress <= 0f)
+                {
+                    shouldUpdate = true;
+                    break;
+                }
+            }
+
+            if (shouldUpdate)
+            {
+                this.GetAchievements();
+            }
         }
 
         private void AddAchievementIcon(Stats.AchievementInfo info, Image icon)
@@ -414,6 +440,8 @@ namespace SAM.Game
 
             this._GameStatusLabel.Text = $"Retrieved {this._AchievementListView.Items.Count} achievements and {this._StatisticsDataGridView.Rows.Count} statistics.";
             this.EnableInput();
+
+            InitializeAsync();
         }
 
         private void RefreshStats()
@@ -452,7 +480,7 @@ namespace SAM.Game
 
             bool wantLocked = this._DisplayLockedOnlyButton.Checked == true;
             bool wantUnlocked = this._DisplayUnlockedOnlyButton.Checked == true;
-
+                        
             foreach (var def in this._AchievementDefinitions)
             {
                 if (string.IsNullOrEmpty(def.Id) == true)
@@ -480,12 +508,18 @@ namespace SAM.Game
 
                 if (textSearch != null)
                 {
-                    if (def.Name.IndexOf(textSearch, StringComparison.OrdinalIgnoreCase) < 0 &&
-                        def.Description.IndexOf(textSearch, StringComparison.OrdinalIgnoreCase) < 0)
+                    string[] searchTerms = textSearch.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+
+                    bool nameMatches = searchTerms.All(term => def.Name.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0);
+                    bool descriptionMatches = searchTerms.All(term => def.Description.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0);
+
+                    if (!nameMatches && !descriptionMatches)
                     {
                         continue;
                     }
-                }
+                }                
+
+                _SteamClient.SteamUserStats.GetAchievementAchievedPercent(def.Id, out float percentage);
 
                 Stats.AchievementInfo info = new()
                 {
@@ -499,6 +533,7 @@ namespace SAM.Game
                     Permission = def.Permission,
                     Name = def.Name,
                     Description = def.Description,
+                    Progress = percentage,
                 };
 
                 ListViewItem item = new()
@@ -525,16 +560,37 @@ namespace SAM.Game
                     ? info.UnlockTime.Value.ToString()
                     : "");
 
+                item.SubItems.Add((percentage > 0 ? $"{percentage}%" : "Error").ToString());
+
                 info.ImageIndex = 0;
 
                 this.AddAchievementToIconQueue(info, false);
                 this._AchievementListView.Items.Add(item);
             }
 
+            SortAchievementsByPercentage();
+
             this._AchievementListView.EndUpdate();
             this._IsUpdatingAchievementList = false;
 
             this.DownloadNextIcon();
+        }
+
+        private void SortAchievementsByPercentage()
+        {
+            var items = this._AchievementListView.Items.Cast<ListViewItem>().ToList();
+
+            var sortedItems = items
+                .OrderByDescending(item =>
+                {
+                    var achievementInfo = item.Tag as Stats.AchievementInfo;
+                    return achievementInfo.Progress;
+                })
+                .ToList();
+
+            this._AchievementListView.Items.Clear();
+
+            this._AchievementListView.Items.AddRange(sortedItems.ToArray());
         }
 
         private void GetStatistics()
